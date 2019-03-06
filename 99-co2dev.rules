@@ -1,0 +1,16 @@
+ACTION!="add", GOTO="co2dev_end"
+
+    SUBSYSTEMS=="usb", \
+    KERNEL=="hidraw*", \
+    ATTRS{idVendor}=="04d9", \
+    ATTRS{idProduct}=="a052", \
+    GROUP="plugdev", \
+    MODE="0660", \
+    SYMLINK+="co2_sensor", \
+    TAG+="systemd", \
+    RUN+="/usr/bin/python /home/pi/co2/reader.py --reports_path /home/pi/co2/ /dev/co2_sensor", \
+    GOTO="co2dev_end"
+
+LABEL="co2dev_end"
+
+
