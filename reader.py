@@ -40,10 +40,10 @@ class CO2DevReader(object):
 
     @staticmethod
     def _dev_read_next(fp):
-        return list(ord(e) for e in self.fp.read(8))
+        return list(ord(e) for e in fp.read(8))
 
     def __init__(self, device_path, key):
-        self._fp = open(path, "a+b",  0)
+        self._fp = open(device_path, "a+b",  0)
         HIDIOCSFEATURE_9 = 0xC0094806
         set_report = "\x00" + "".join(chr(e) for e in key)
         fcntl.ioctl(self._fp, HIDIOCSFEATURE_9, set_report)
@@ -64,7 +64,7 @@ class CO2DevReader(object):
         self._bg.join()
 
     def _get_next_op(self):
-        decrypted = CO2DevReader._decrypt(self._key, CO2DevReader._dev_read_next())
+        decrypted = CO2DevReader._decrypt(self._key, CO2DevReader._dev_read_next(self._fp))
         if decrypted[4] != 0x0d or (sum(decrypted[:3]) & 0xff) != decrypted[3]:
             raise "Checksum error"
 
@@ -229,12 +229,17 @@ class CO2Daemon(object):
 
     def main_loop(self):
         try:
+            self.logger.info("LOOP1")
             while True:
+                self.logger.info("LOOP2")
                 self._run_main_loop_step()
+                self.logger.info("SHHH")
                 time.sleep(self.update_interval_seconds)
+                self.logger.info("LOOP AGAIN")
         except KeyboardInterrupt:
             self.reader.stop()
 
+        self.logger.info("OUT OF LOOP")
         # Write report outside catch block; uses matplotlib, so it has a non-0
         # chance of failing. If it fails before stopping reader it may zombify.
         self.write_report()
@@ -244,7 +249,7 @@ class CO2Daemon(object):
             fn = self.reports_path + "co2_report_{}.png".format(datetime.now().strftime('%Y%m%d-%H%M%S'))
             self.logger.info("Wrote report to {}".format(fn))
             self.history.report(fn)
-        except ex:
+        except Exception as ex:
             # Usually run in a daemon loop, so don't let exceptions propagate
             self.logger.error("Can't write report", ex)
 
@@ -321,19 +326,7 @@ logger = mk_logger('CO2 Reader')
 if __name__ == "__main__":
     # Arbitrary key
     KEY = [0xc4, 0xc6, 0xc0, 0x92, 0x40, 0x23, 0xdc, 0x96]
-    # reader = CO2DevReader(args.device, KEY)
-
-    class Foo(object):
-        def __init__(self):
-            self.co2 = 1000
-            self.temp = 32
-            self.rel_humidity = None
-            self.last_updated = None
-
-        def stop(self):
-            pass
-
-    reader = Foo()
+    reader = CO2DevReader(args.device, KEY)
 
     plotter = PlotReporter('temp', 'co2')
     plotter.set_scales(temp=[0,30], co2=[0,2500])
@@ -349,9 +342,12 @@ if __name__ == "__main__":
     logger.info(msg)
 
     if args.dont_daemonize:
+        logger.info("NO DEMON")
         svc.main_loop()
     else:
+        logger.info("DEMON")
         with daemon.DaemonContext():
+            logger.info("DEMON LOOP")
             svc.main_loop()
 
 
