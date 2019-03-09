@@ -8,7 +8,7 @@ from datetime import datetime
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import random, time, sys, fcntl, time, threading, signal, os, daemon
+import random, sys, fcntl, time, threading, signal, os
 
 class CO2DevReader(object):
     @staticmethod
@@ -229,17 +229,12 @@ class CO2Daemon(object):
 
     def main_loop(self):
         try:
-            self.logger.info("LOOP1")
             while True:
-                self.logger.info("LOOP2")
                 self._run_main_loop_step()
-                self.logger.info("SHHH")
                 time.sleep(self.update_interval_seconds)
-                self.logger.info("LOOP AGAIN")
         except KeyboardInterrupt:
             self.reader.stop()
 
-        self.logger.info("OUT OF LOOP")
         # Write report outside catch block; uses matplotlib, so it has a non-0
         # chance of failing. If it fails before stopping reader it may zombify.
         self.write_report()
@@ -341,14 +336,12 @@ if __name__ == "__main__":
                      args.report_interval, (args.report_interval/60/60))
     logger.info(msg)
 
-    if args.dont_daemonize:
-        logger.info("NO DEMON")
-        svc.main_loop()
-    else:
-        logger.info("DEMON")
-        with daemon.DaemonContext():
-            logger.info("DEMON LOOP")
-            svc.main_loop()
+    if not args.dont_daemonize:
+        pid = os.fork()
+        if pid > 0:
+            logger.info("Daemon started!")
+            os._exit(0)
 
+    svc.main_loop()
 
 
