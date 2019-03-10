@@ -321,21 +321,10 @@ Reading from sensor {} every {} seconds.
 Will write reports to {} every {} seconds ({} hours).
 """
 
-args = parse_argv(APP_DESCR)
-logger = mk_logger('CO2 Reader', args.verbose)
 
 if __name__ == "__main__":
-    # Arbitrary key
-    KEY = [0xc4, 0xc6, 0xc0, 0x92, 0x40, 0x23, 0xdc, 0x96]
-    reader = CO2DevReader(args.device, KEY)
-
-    plotter = PlotReporter('temp', 'co2')
-    plotter.set_scales(temp=[0,30], co2=[0,2500])
-    reports = MultiReporter(plotter)
-    # reports.attach(TextReporter(logger))
-
-    svc = CO2Daemon(args.update_interval, args.report_interval,
-                    args.reports_path, logger, reader, reports)
+    args = parse_argv(APP_DESCR)
+    logger = mk_logger('CO2 Reader', args.verbose)
 
     msg = APP_DESCR.format(os.getpid())
     msg += APP_RUN_STATUS.format(args.device, args.update_interval, args.reports_path,
@@ -347,6 +336,18 @@ if __name__ == "__main__":
         if pid > 0:
             logger.info("Daemon started!")
             os._exit(0)
+
+    # Arbitrary key
+    KEY = [0xc4, 0xc6, 0xc0, 0x92, 0x40, 0x23, 0xdc, 0x96]
+    reader = CO2DevReader(args.device, KEY)
+
+    plotter = PlotReporter('temp', 'co2')
+    plotter.set_scales(temp=[0,30], co2=[0,2500])
+    reports = MultiReporter(plotter)
+    # reports.attach(TextReporter(logger))
+
+    svc = CO2Daemon(args.update_interval, args.report_interval,
+                    args.reports_path, logger, reader, reports)
 
     svc.main_loop()
 
