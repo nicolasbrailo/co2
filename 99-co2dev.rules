@@ -8,7 +8,7 @@ ACTION!="add", GOTO="co2dev_end"
     MODE="0660", \
     SYMLINK+="co2_sensor", \
     TAG+="systemd", \
-    RUN+="/usr/bin/python /home/pi/co2/reader.py --reports_path /home/pi/co2/ /dev/co2_sensor", \
+    RUN+="/bin/bash /home/pi/co2/99-co2dev.sh", \
     GOTO="co2dev_end"
 
 LABEL="co2dev_end"

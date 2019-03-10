@@ -73,20 +73,24 @@ class CO2DevReader(object):
         return op, val
 
     def _bg_update_readings(self):
-        while self._running:
-            op, val = self._get_next_op()
-            updated = True
-            if op == 0x50:
-                self.co2 = val
-            if op == 0x42:
-                self.temp = val/16.0-273.15
-            if op == 0x44:
-                self.rel_humidity = val/100.0
-            else:
-                updated = False
+        try:
+            while self._running:
+                op, val = self._get_next_op()
+                updated = True
+                if op == 0x50:
+                    self.co2 = val
+                if op == 0x42:
+                    self.temp = val/16.0-273.15
+                if op == 0x44:
+                    self.rel_humidity = val/100.0
+                else:
+                    updated = False
 
-            if updated:
-                self.last_updated = time.time()
+                if updated:
+                    self.last_updated = time.time()
+        except IOError:
+            # TODO: Sensor unplugged, need to shutdown and cleanup
+            pass
 
 class MultiReporter(object):
     def __init__(self, *reporters):
@@ -269,6 +273,7 @@ def parse_argv(app_descr):
     parser.add_argument('--reports_path', default=REPORTS_PATH,
                            help='Directory where reports will be stored.')
     parser.add_argument('--dont_daemonize', help='Don\'t demonize', action='store_true')
+    parser.add_argument('--verbose', help='Write to syslog each measurement', action='store_true')
     #parser.add_argument('--plot_report', help='Create a graph report', action='store_false')
     #parser.add_argument('--text_report', help='Create a text report of logged values', action='store_true')
     parser.add_argument('device', help='Device filename (eg: /dev/hidraw1)')
@@ -276,7 +281,7 @@ def parse_argv(app_descr):
     return parser.parse_args()
 
 
-def mk_logger(log_name):
+def mk_logger(log_name, verbose):
     import logging
     import logging.handlers
     import sys
@@ -287,7 +292,8 @@ def mk_logger(log_name):
 
     handler = logging.handlers.SysLogHandler(address = '/dev/log')
     handler.setFormatter(formatter)
-    handler.setLevel(logging.INFO)
+    if not verbose:
+        handler.setLevel(logging.INFO)
     logger.addHandler(handler)
 
     handler = logging.StreamHandler(sys.stdout)
@@ -316,7 +322,7 @@ Will write reports to {} every {} seconds ({} hours).
 """
 
 args = parse_argv(APP_DESCR)
-logger = mk_logger('CO2 Reader')
+logger = mk_logger('CO2 Reader', args.verbose)
 
 if __name__ == "__main__":
     # Arbitrary key
