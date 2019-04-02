@@ -3,7 +3,7 @@
 # * https://hackaday.io/project/5301-reverse-engineering-a-low-cost-usb-co-monitor/log/17909-all-your-base-are-belong-to-us
 # * https://blog.wooga.com/woogas-office-weather-wow-67e24a5338
 
-import time, fcntl, threading, os
+import time, fcntl, threading, os, signal
 
 class CO2DevReader(object):
     class Disconnected(Exception):
@@ -45,7 +45,7 @@ class CO2DevReader(object):
         self._device_path = device_path
         self._device_key = key
         self._fp = None
-        self.last_updated = None
+        self.last_updated = time.time()
         self._reset()
 
     def _reset(self):
@@ -151,6 +151,10 @@ class CO2DevReaderDaemon(object):
             self._logger.info("Shutdown requested")
             self._on_shutdown_callback()
             service.stop()
+
+    def force_sensor_reading(self):
+        self._logger.info("Trigger sensor update")
+        self._on_new_reading_available_callback(self._co2_dev_reader)
  
     def stop(self):
         self._running = False
@@ -179,7 +183,7 @@ class DevFileReporter(object):
         self._file_path = file_path
 
         if fmt == 'json':
-            msg = '"updated":{}, "status":{}, "last_reading":{}, "temperature":{}, '+\
+            msg = '"updated":{}, "status":"{}", "last_reading":{}, "temperature":{}, '+\
                   '"co2":{}, "rel_humidity":{}'
             self._msg_format = '{{' + msg + '}}'
         elif fmt == 'csv':
@@ -193,10 +197,10 @@ class DevFileReporter(object):
         msg = self._msg_format.format(
                         sensor.last_updated,
                         sensor.status,
-                        sensor.last_reading,
-                        sensor.temperature,
-                        sensor.co2,
-                        sensor.rel_humidity)
+                        sensor.last_reading if sensor.last_reading is not None else 0,
+                        sensor.temperature if sensor.temperature is not None else 0,
+                        sensor.co2 if sensor.co2 is not None else 0,
+                        sensor.rel_humidity if sensor.rel_humidity is not None else 0)
 
         with open(self._file_path, 'w+') as fp:
             fp.write(msg)
@@ -360,6 +364,8 @@ APP_DESCR = """Periodically log CO2 and temperature readings from a sensor. For 
  https://hackaday.io/project/5301-reverse-engineering-a-low-cost-usb-co-monitor
 
 Source for CO2 reader service @ https://github.com/nicolasbrailo/co2
+
+Use SIGUSR1 to trigger sensor update.
 """
 
 if __name__ == "__main__":
@@ -384,5 +390,9 @@ if __name__ == "__main__":
     KEY = [0xc4, 0xc6, 0xc0, 0x92, 0x40, 0x23, 0xdc, 0x96]
     reader = CO2DevReader(logger, args.device_path, KEY)
     service = CO2DevReaderDaemon(logger, reader, args, actions.on_sensor_updated, actions.on_shutdown)
+
+    # Install signal handlers
+    signal.signal(signal.SIGUSR1, lambda *_: service.force_sensor_reading())
+
     service.run()
 
