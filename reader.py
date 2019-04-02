@@ -3,14 +3,12 @@
 # * https://hackaday.io/project/5301-reverse-engineering-a-low-cost-usb-co-monitor/log/17909-all-your-base-are-belong-to-us
 # * https://blog.wooga.com/woogas-office-weather-wow-67e24a5338
 
-from collections import namedtuple
-from datetime import datetime
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import random, sys, fcntl, time, threading, signal, os
+import time, fcntl, threading, os
 
 class CO2DevReader(object):
+    class Disconnected(Exception):
+        pass
+
     @staticmethod
     def _decrypt(key,  data):
         cstate = [0x48,  0x74,  0x65,  0x6D,  0x70,  0x39,  0x39,  0x65]
@@ -42,29 +40,46 @@ class CO2DevReader(object):
     def _dev_read_next(fp):
         return list(ord(e) for e in fp.read(8))
 
-    def __init__(self, device_path, key):
-        self._fp = open(device_path, "a+b",  0)
-        HIDIOCSFEATURE_9 = 0xC0094806
-        set_report = "\x00" + "".join(chr(e) for e in key)
-        fcntl.ioctl(self._fp, HIDIOCSFEATURE_9, set_report)
-
-        self._key = key
-        self._running = True
-
-        self.co2 = None
-        self.temp = None
-        self.rel_humidity = None
+    def __init__(self, logger, device_path, key):
+        self._logger = logger
+        self._device_path = device_path
+        self._device_key = key
+        self._fp = None
         self.last_updated = None
+        self._reset()
 
-        self._bg = threading.Thread(target=self._bg_update_readings)
-        self._bg.start()
+    def _reset(self):
+        try:
+            if self._fp is not None:
+                self._fp.close()
+        except Exception:
+            pass
 
-    def stop(self):
-        self._running = False
-        self._bg.join()
+        self._fp = None
+        self.co2 = None
+        self.temperature = None
+        self.rel_humidity = None
+        self.last_reading = None
+        self.status = 'disconnected'
+
+    def connect(self):
+        self._reset()
+        self._logger.info("Connecting to CO2 sensor @ {}".format(self._device_path))
+        try:
+            self._fp = open(self._device_path, "a+b",  0)
+            HIDIOCSFEATURE_9 = 0xC0094806
+            set_report = "\x00" + "".join(chr(e) for e in self._device_key)
+            fcntl.ioctl(self._fp, HIDIOCSFEATURE_9, set_report)
+            self.status = 'connected'
+        except Exception as ex:
+            self._logger.error("Connection failed: {}".format(ex))
+            raise ex
 
     def _get_next_op(self):
-        decrypted = CO2DevReader._decrypt(self._key, CO2DevReader._dev_read_next(self._fp))
+        if self._fp is None:
+            raise IOError
+
+        decrypted = CO2DevReader._decrypt(self._device_key, CO2DevReader._dev_read_next(self._fp))
         if decrypted[4] != 0x0d or (sum(decrypted[:3]) & 0xff) != decrypted[3]:
             raise "Checksum error"
 
@@ -72,63 +87,126 @@ class CO2DevReader(object):
         val = decrypted[1] << 8 | decrypted[2]
         return op, val
 
-    def _bg_update_readings(self):
+    def update_sensor_values(self):
+        self.last_updated = time.time()
         try:
-            while self._running:
-                op, val = self._get_next_op()
-                updated = True
-                if op == 0x50:
-                    self.co2 = val
-                if op == 0x42:
-                    self.temp = val/16.0-273.15
-                if op == 0x44:
-                    self.rel_humidity = val/100.0
-                else:
-                    updated = False
+            op, val = self._get_next_op()
+            updated = True
+            if op == 0x50:
+                self.co2 = val
+            elif op == 0x42:
+                self.temperature = val/16.0-273.15
+            elif op == 0x44:
+                self.rel_humidity = val/100.0
+            else:
+                updated = False
 
-                if updated:
-                    self.last_updated = time.time()
+            if updated:
+                self.last_reading = time.time()
         except IOError:
-            # TODO: Sensor unplugged, need to shutdown and cleanup
-            pass
+            self._fp = None
+            self.status = 'disconnected'
+            raise CO2DevReader.Disconnected
 
-class MultiReporter(object):
-    def __init__(self, *reporters):
-        self.start_timestamp = time.time()
-        self.reporters = list(reporters)
 
-    def attach(self, r):
-        self.reporters.append(r)
+class CO2DevReaderDaemon(object):
+    def __init__(self, logger, co2_dev_reader, args, 
+                    on_new_reading_available_callback, on_shutdown_callback):
+        self._logger = logger
+        self._co2_dev_reader = co2_dev_reader
+        self._args = args
+        self._on_new_reading_available_callback = on_new_reading_available_callback
+        self._on_shutdown_callback = on_shutdown_callback
+        self._running = False
 
-    def add(self, **kv):
-        for rep in self.reporters:
-            rep.add(**kv)
+    def run(self):
+        if self._args.dont_daemonize:
+            self._logger.info("Running as normal (non-daemon) task")
+        else:
+            self._logger.info("Daemonizing...")
+            pid = os.fork()
+            if pid > 0:
+                self._logger.info("Daemon started!")
+                os._exit(0)
 
-    def report(self, path):
-        for rep in self.reporters:
-            rep.report(path)
+        self._running = True
+        self._bg = threading.Thread(target=self._bg_update_readings)
+        self._bg.start()
 
-    def reset(self):
-        self.start_timestamp = time.time()
-        for rep in self.reporters:
-            rep.reset()
+        self._logger.info("Starting. Will update sensor status every {} seconds".\
+                                format(self._args.read_freq_seconds))
+        try:
+            while True:
+                time.sleep(self._args.read_freq_seconds)
 
-class TextReporter(object):
-    def __init__(self, logger):
-        self.logger = logger
-        self.start_timestamp = time.time()
+                last_stat = "{}: t={}, co2={}, rh={}".format(
+                                    self._co2_dev_reader.last_updated,
+                                    self._co2_dev_reader.temperature,
+                                    self._co2_dev_reader.co2,
+                                    self._co2_dev_reader.rel_humidity)
+                logger.debug(last_stat)
 
-    def add(self, **kv):
-        txt = ""
-        for key in kv:
-            txt += "{}={}, ".format(key, kv[key])
-        self.logger.info(txt)
+                self._on_new_reading_available_callback(self._co2_dev_reader)
+        except KeyboardInterrupt:
+            self._logger.info("Shutdown requested")
+            self._on_shutdown_callback()
+            service.stop()
+ 
+    def stop(self):
+        self._running = False
+        self._bg.join()
 
-    def report(self, path):
-        pass
+    def _bg_update_readings(self):
+        while self._running:
+            try:
+                self._co2_dev_reader.update_sensor_values()
+            except CO2DevReader.Disconnected:
+                try:
+                    self._co2_dev_reader.connect()
+                except:
+                    self._logger.error("Reconnect fail. Retry in {} seconds".
+                                            format(self._args.device_reconnection_backoff_seconds)) 
+                    time.sleep(self._args.device_reconnection_backoff_seconds)
 
-    def reset(self):
-        self.start_timestamp = time.time()
+
+class DevFileReporter(object):
+    """ Keep a file with the latest status of sensor data """
+
+    FORMATS = ['json', 'csv']
+
+    def __init__(self, logger, file_path, fmt):
+        self._logger = logger
+        self._file_path = file_path
+
+        if fmt == 'json':
+            msg = "'updated':{}, 'status':{}, 'last_reading':{}, 'temperature':{}, "+\
+                  "'co2':{}, 'rel_humidity':{}"
+            self._msg_format = '{{' + msg + '}}'
+        elif fmt == 'csv':
+            self._msg_format = "{},{},{},{},{},{}"
+        else:
+            raise Exception("Invalid format {}".format(fmt))
+
+        self._logger.info("Will report {} status to {}".format(fmt, self._file_path))
+
+    def on_sensor_updated(self, sensor):
+        msg = self._msg_format.format(
+                        sensor.last_updated,
+                        sensor.status,
+                        sensor.last_reading,
+                        sensor.temperature,
+                        sensor.co2,
+                        sensor.rel_humidity)
+
+        with open(self._file_path, 'w+') as fp:
+            fp.write(msg)
+
+    def on_shutdown(self):
+        self._logger.info("Clean up reporter {}".format(self._file_path))
+        try:
+            os.remove(self._file_path)
+        except:
+            self._logger.error("Failed to clean up {}".format(self._file_path))
 
 
 class PlotReporter(object):
@@ -146,26 +224,39 @@ class PlotReporter(object):
             if self.min is None or val < self.min:
                 self.min = val
 
-    def __init__(self, *kv):
+    def __init__(self, logger, graph_fn):
+        self._logger = logger
+        self._out_fn = graph_fn
         self.start_timestamp = time.time()
-        self.series_map = {}
-        for k in kv:
-            self.series_map[k] = PlotReporter.TimeSeries()
+        self.series_map = {
+                'temp': PlotReporter.TimeSeries(),
+                'co2': PlotReporter.TimeSeries(),
+            }
+        self.series_map['temp'].scale = [0,30]
+        self.series_map['co2'].scale = [0,2500]
+        self._logger.info("Will plot sensor values at the end of this run")
 
-    def add(self, **kv):
-        for key in kv:
-            self.series_map[key].add(kv[key])
+    def on_sensor_updated(self, sensor):
+        if sensor.status != 'connected':
+            return
+        self.series_map['temp'].add(sensor.temperature)
+        self.series_map['co2'].add(sensor.co2)
 
-    def set_scales(self, **kv):
-        for key in kv:
-            self.series_map[key].scale = kv[key]
+    def on_shutdown(self):
+        self.report()
 
     def reset(self):
         self.start_timestamp = time.time()
         for k in self.series_map:
             self.series_map[k] = PlotReporter.TimeSeries()
 
-    def report(self, out_fn=None):
+    def report(self):
+        self._logger.info("Try to create pretty graph at {}".format(self._out_fn))
+
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+
         fig, series_plot = plt.subplots()
         series_plot.set_xlabel('time (s)')
         colors = ['blue', 'red', 'green', 'cyan', 'magenta', 'yellow', 'black', 'white']
@@ -195,91 +286,50 @@ class PlotReporter(object):
         fig.tight_layout()  # otherwise the right y-label is slightly clipped
         plt.axis('off')
 
-        if out_fn is None: 
+        if self._out_fn is None: 
             plt.show()
         else:
-            plt.savefig(out_fn)
+            plt.savefig(self._out_fn)
 
         plt.close()
+        self._logger.info("Plot created")
+
+class SensorUpdateCallbackComposer(object):
+    def __init__(self, callbacks):
+        self._callbacks = callbacks
+
+    def on_sensor_updated(self, sensor):
+        for cb in self._callbacks:
+            cb.on_sensor_updated(sensor)
+
+    def on_shutdown(self):
+        for cb in self._callbacks:
+            cb.on_shutdown()
 
 
-class CO2Daemon(object):
-    def __init__(self, update_interval_seconds, report_interval_seconds,
-                        reports_path, logger, co2_reader, reporter):
-
-        self.update_interval_seconds = update_interval_seconds
-        self.report_interval_seconds = report_interval_seconds
-        self.reports_path = reports_path
-        self.logger = logger
-        self.reader = co2_reader
-        self.history = reporter
-
-        signal.signal(signal.SIGUSR1, self.sigusr1_handler)
-        signal.signal(signal.SIGUSR2, self.sigusr2_handler)
-
-    def sigusr1_handler(self, *_):
-        self.write_report()
-
-    def sigusr2_handler(self, *_):
-        self.history.reset()
-
-    def _run_main_loop_step(self):
-        self.history.add(co2=self.reader.co2, temp=self.reader.temp)
-        self.logger.debug(self.get_last_known_status())
-
-        if time.time() - self.history.start_timestamp > self.report_interval_seconds:
-            self.write_report()
-            self.history.reset()
-
-    def main_loop(self):
-        try:
-            while True:
-                self._run_main_loop_step()
-                time.sleep(self.update_interval_seconds)
-        except KeyboardInterrupt:
-            self.reader.stop()
-
-        # Write report outside catch block; uses matplotlib, so it has a non-0
-        # chance of failing. If it fails before stopping reader it may zombify.
-        self.write_report()
-
-    def write_report(self):
-        try:
-            fn = self.reports_path + "co2_report_{}.png".format(datetime.now().strftime('%Y%m%d-%H%M%S'))
-            self.logger.info("Wrote report to {}".format(fn))
-            self.history.report(fn)
-        except Exception as ex:
-            # Usually run in a daemon loop, so don't let exceptions propagate
-            self.logger.error("Can't write report", ex)
-
-    def get_last_known_status(self):
-        return "{}: t={}, co2={}, rh={}, updated={}".format(
-                            time.time(), self.reader.temp, self.reader.co2,
-                            self.reader.rel_humidity, self.reader.last_updated)
-
-
-def parse_argv(app_descr):
+def parse_argv(app_descr, device_reconnection_backoff_seconds, read_freq_seconds):
     import argparse
     class ArgsDescrFormatter(argparse.ArgumentDefaultsHelpFormatter, argparse.RawDescriptionHelpFormatter):
         pass
 
-    parser = argparse.ArgumentParser(description=app_descr.format("$PID"),
-       formatter_class=ArgsDescrFormatter)
+    parser = argparse.ArgumentParser(description=app_descr, formatter_class=ArgsDescrFormatter)
 
-    parser.add_argument('--update_interval', default=UPDATE_INTERVAL_SECONDS, type=int,
-                           help='Sensor read interval (seconds)')
-    parser.add_argument('--report_interval', default=REPORT_INTERVAL_SECONDS, type=int,
-                           help='Report write interval (seconds)')
-    parser.add_argument('--reports_path', default=REPORTS_PATH,
-                           help='Directory where reports will be stored.')
-    parser.add_argument('--dont_daemonize', help='Don\'t demonize', action='store_true')
     parser.add_argument('--verbose', help='Write to syslog each measurement', action='store_true')
-    #parser.add_argument('--plot_report', help='Create a graph report', action='store_false')
-    #parser.add_argument('--text_report', help='Create a text report of logged values', action='store_true')
-    parser.add_argument('device', help='Device filename (eg: /dev/hidraw1)')
+    parser.add_argument('--dont_daemonize', help='Don\'t demonize', action='store_true')
+    parser.add_argument('--device_reconnection_backoff_seconds', default=device_reconnection_backoff_seconds,
+                            type=int, help='If device disconnects: time to wait between reconnection attempts')
+    parser.add_argument('--read_freq_seconds', default=read_freq_seconds, type=int,
+                           help='Sensor read frequency (seconds)')
+    parser.add_argument('--csv_report_decoded_sensor_status_path', default=None,
+                           help='Path for a dev-like file which will contain the latest sensor status. CSV format.')
+    parser.add_argument('--json_report_decoded_sensor_status_path', default=None,
+                           help='Path for a dev-like file which will contain the latest sensor status. JSON format.')
+    parser.add_argument('--plot_report_path', help='Create a graph report', default=None)
+    parser.add_argument('device_path', help='Device path (eg: /dev/hidraw0)')
 
-    return parser.parse_args()
-
+    args = parser.parse_args()
+    args.app_name = 'CO2Reader'
+    return args
 
 def mk_logger(log_name, verbose):
     import logging
@@ -303,52 +353,36 @@ def mk_logger(log_name, verbose):
     return logger
 
 
-UPDATE_INTERVAL_SECONDS = 60 * 3
-REPORT_INTERVAL_SECONDS = 60 * 60 * 24
-REPORTS_PATH = "./"
-
+READ_FREQ_SECONDS = 60 * 3
+DEVICE_RECONNECTION_BACKOFF_SECONDS = 60
 APP_DESCR = """Periodically log CO2 and temperature readings from a sensor. For device details, see:
 
  https://hackaday.io/project/5301-reverse-engineering-a-low-cost-usb-co-monitor
 
-Signals accepted (kill -s $SIGNAL {}):
-  USR1   Write report with current history data
-  USR2   Clean history data
+Source for CO2 reader service @ https://github.com/nicolasbrailo/co2
 """
-
-APP_RUN_STATUS = """
-Reading from sensor {} every {} seconds.
-Will write reports to {} every {} seconds ({} hours).
-"""
-
 
 if __name__ == "__main__":
-    args = parse_argv(APP_DESCR)
-    logger = mk_logger('CO2 Reader', args.verbose)
+    args = parse_argv(APP_DESCR, DEVICE_RECONNECTION_BACKOFF_SECONDS, READ_FREQ_SECONDS)
+    logger = mk_logger(args.app_name, args.verbose)
+    logger.info(APP_DESCR)
+    logger.info(str(args))
 
-    msg = APP_DESCR.format(os.getpid())
-    msg += APP_RUN_STATUS.format(args.device, args.update_interval, args.reports_path,
-                     args.report_interval, (args.report_interval/60/60))
-    logger.info(msg)
+    on_sensor_update_cbs = []
 
-    if not args.dont_daemonize:
-        pid = os.fork()
-        if pid > 0:
-            logger.info("Daemon started!")
-            os._exit(0)
+    if args.json_report_decoded_sensor_status_path is not None:
+        on_sensor_update_cbs.append(DevFileReporter(logger, args.json_report_decoded_sensor_status_path, 'json'))
 
-    # Arbitrary key
+    if args.csv_report_decoded_sensor_status_path is not None:
+        on_sensor_update_cbs.append(DevFileReporter(logger, args.csv_report_decoded_sensor_status_path, 'csv'))
+
+    if args.plot_report_path is not None:
+        on_sensor_update_cbs.append(PlotReporter(logger, args.plot_report_path))
+
+    actions = SensorUpdateCallbackComposer(on_sensor_update_cbs)
+
     KEY = [0xc4, 0xc6, 0xc0, 0x92, 0x40, 0x23, 0xdc, 0x96]
-    reader = CO2DevReader(args.device, KEY)
-
-    plotter = PlotReporter('temp', 'co2')
-    plotter.set_scales(temp=[0,30], co2=[0,2500])
-    reports = MultiReporter(plotter)
-    # reports.attach(TextReporter(logger))
-
-    svc = CO2Daemon(args.update_interval, args.report_interval,
-                    args.reports_path, logger, reader, reports)
-
-    svc.main_loop()
-
+    reader = CO2DevReader(logger, args.device_path, KEY)
+    service = CO2DevReaderDaemon(logger, reader, args, actions.on_sensor_updated, actions.on_shutdown)
+    service.run()
 
