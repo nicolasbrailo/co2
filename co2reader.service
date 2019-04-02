@@ -1,0 +1,15 @@
+[Unit]
+Description=CO2 sensor reader and decoder
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python /home/pi/co2/co2reader.py --dont_daemonize --json_report_decoded_sensor_status_path /home/pi/co2_sensor_json /dev/co2_sensor
+WorkingDirectory=/home/pi/co2
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+

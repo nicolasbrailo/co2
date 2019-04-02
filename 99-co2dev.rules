@@ -5,7 +5,7 @@ ACTION!="add", GOTO="co2dev_end"
     ATTRS{idVendor}=="04d9", \
     ATTRS{idProduct}=="a052", \
     GROUP="plugdev", \
-    MODE="0660", \
+    MODE="0664", \
     SYMLINK+="co2_sensor", \
     TAG+="systemd", \
     RUN+="/bin/bash /home/pi/co2/99-co2dev.sh", \
