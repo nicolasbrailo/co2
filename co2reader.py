@@ -202,8 +202,11 @@ class DevFileReporter(object):
                         sensor.co2 if sensor.co2 is not None else 0,
                         sensor.rel_humidity if sensor.rel_humidity is not None else 0)
 
-        with open(self._file_path, 'w+') as fp:
-            fp.write(msg)
+        try:
+            with open(self._file_path, 'w+') as fp:
+                fp.write(msg)
+        except Exception as ex:
+            self._logger.error("Couldn't update report at {}: {}".format(self._file_path, ex))
 
     def on_shutdown(self):
         self._logger.info("Clean up reporter {}".format(self._file_path))
