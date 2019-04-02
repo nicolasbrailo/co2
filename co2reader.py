@@ -179,8 +179,8 @@ class DevFileReporter(object):
         self._file_path = file_path
 
         if fmt == 'json':
-            msg = "'updated':{}, 'status':{}, 'last_reading':{}, 'temperature':{}, "+\
-                  "'co2':{}, 'rel_humidity':{}"
+            msg = '"updated":{}, "status":{}, "last_reading":{}, "temperature":{}, '+\
+                  '"co2":{}, "rel_humidity":{}'
             self._msg_format = '{{' + msg + '}}'
         elif fmt == 'csv':
             self._msg_format = "{},{},{},{},{},{}"
