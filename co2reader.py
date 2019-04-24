@@ -172,22 +172,22 @@ class CO2DevReaderDaemon(object):
                                             format(self._args.device_reconnection_backoff_seconds)) 
                     time.sleep(self._args.device_reconnection_backoff_seconds)
 
-
-class DevFileReporter(object):
+class FileReporter(object):
     """ Keep a file with the latest status of sensor data """
 
     FORMATS = ['json', 'csv']
 
-    def __init__(self, logger, file_path, fmt):
+    def __init__(self, logger, file_path, fmt, append):
         self._logger = logger
         self._file_path = file_path
+        self._append = append
 
         if fmt == 'json':
             msg = '"updated":{}, "status":"{}", "last_reading":{}, "temperature":{}, '+\
                   '"co2":{}, "rel_humidity":{}'
             self._msg_format = '{{' + msg + '}}'
         elif fmt == 'csv':
-            self._msg_format = "{},{},{},{},{},{}"
+            self._msg_format = "{},{},{},{},{},{}\n"
         else:
             raise Exception("Invalid format {}".format(fmt))
 
@@ -203,18 +203,43 @@ class DevFileReporter(object):
                         sensor.rel_humidity if sensor.rel_humidity is not None else 0)
 
         try:
-            with open(self._file_path, 'w+') as fp:
+            open_mode = 'a+' if self._append else 'w+'
+            with open(self._file_path, open_mode) as fp:
                 fp.write(msg)
         except Exception as ex:
             self._logger.error("Couldn't update report at {}: {}".format(self._file_path, ex))
 
     def on_shutdown(self):
-        self._logger.info("Clean up reporter {}".format(self._file_path))
-        try:
-            os.remove(self._file_path)
-        except:
-            self._logger.error("Failed to clean up {}".format(self._file_path))
+        if not self._append:
+            self._logger.info("Clean up reporter {}".format(self._file_path))
+            try:
+                os.remove(self._file_path)
+            except:
+                self._logger.error("Failed to clean up {}".format(self._file_path))
 
+
+class MiniFileReporter(object):
+    """ Keep a file with the latest status of sensor data, but smaller """
+
+    def __init__(self, logger, file_path):
+        self._logger = logger
+        self._file_path = file_path
+        self._logger.info("Will keep log in {}".format(self._file_path))
+
+    def on_sensor_updated(self, sensor):
+        msg = "{},{},{}\n".format(
+                        sensor.last_reading if sensor.last_reading is not None else 0,
+                        sensor.temperature if sensor.temperature is not None else 0,
+                        sensor.co2 if sensor.co2 is not None else 0)
+
+        try:
+            with open(self._file_path, 'a+') as fp:
+                fp.write(msg)
+        except Exception as ex:
+            self._logger.error("Couldn't update report at {}: {}".format(self._file_path, ex))
+
+    def on_shutdown(self):
+        pass
 
 class PlotReporter(object):
     class TimeSeries(object):
@@ -331,6 +356,8 @@ def parse_argv(app_descr, device_reconnection_backoff_seconds, read_freq_seconds
                            help='Path for a dev-like file which will contain the latest sensor status. CSV format.')
     parser.add_argument('--json_report_decoded_sensor_status_path', default=None,
                            help='Path for a dev-like file which will contain the latest sensor status. JSON format.')
+    parser.add_argument('--csv_log', default=None,
+                           help='Path for a csv log file. Size is not capped.')
     parser.add_argument('--plot_report_path', help='Create a graph report', default=None)
     parser.add_argument('device_path', help='Device path (eg: /dev/hidraw0)')
 
@@ -380,10 +407,13 @@ if __name__ == "__main__":
     on_sensor_update_cbs = []
 
     if args.json_report_decoded_sensor_status_path is not None:
-        on_sensor_update_cbs.append(DevFileReporter(logger, args.json_report_decoded_sensor_status_path, 'json'))
+        on_sensor_update_cbs.append(FileReporter(logger, args.json_report_decoded_sensor_status_path, 'json', False))
 
     if args.csv_report_decoded_sensor_status_path is not None:
-        on_sensor_update_cbs.append(DevFileReporter(logger, args.csv_report_decoded_sensor_status_path, 'csv'))
+        on_sensor_update_cbs.append(FileReporter(logger, args.csv_report_decoded_sensor_status_path, 'csv', False))
+
+    if args.csv_log is not None:
+        on_sensor_update_cbs.append(MiniFileReporter(logger, args.csv_log))
 
     if args.plot_report_path is not None:
         on_sensor_update_cbs.append(PlotReporter(logger, args.plot_report_path))
