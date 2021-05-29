@@ -139,12 +139,12 @@ class CO2DevReaderDaemon(object):
             while True:
                 time.sleep(self._args.read_freq_seconds)
 
-                last_stat = "{}: t={}, co2={}, rh={}".format(
-                                    self._co2_dev_reader.last_updated,
-                                    self._co2_dev_reader.temperature,
-                                    self._co2_dev_reader.co2,
-                                    self._co2_dev_reader.rel_humidity)
-                logger.debug(last_stat)
+                #last_stat = "{}: t={}, co2={}, rh={}".format(
+                #                    self._co2_dev_reader.last_updated,
+                #                    self._co2_dev_reader.temperature,
+                #                    self._co2_dev_reader.co2,
+                #                    self._co2_dev_reader.rel_humidity)
+                #logger.debug(last_stat)
 
                 self._on_new_reading_available_callback(self._co2_dev_reader)
         except KeyboardInterrupt:

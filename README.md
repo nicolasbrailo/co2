@@ -7,6 +7,7 @@ For details on the supported devices, see: https://hackaday.io/project/5301-reve
 
 # systemd install guide
 NB: This is written for a RapsberryPi. Other platforms might be slightly different.
+NB2: Paths in config files are for /home/pi/co2 and /dev/co2 - if your paths are different, you should change these files.
 
 1. Edit the run configuration @ co2reader.service
 2. Link co2reader.service to systemd's directory: sudo ln -s co2reader.service /etc/systemd/system

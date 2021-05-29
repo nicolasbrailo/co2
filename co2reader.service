@@ -3,8 +3,8 @@ Description=CO2 sensor reader and decoder
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python /home/pi/co2/co2reader.py --read_freq_seconds 3 --dont_daemonize --csv_report /home/pi/co2_history.csv /dev/co2_sensor
-WorkingDirectory=/home/pi/co2
+ExecStart=/usr/bin/python /home/pi/BatHome/co2/co2reader.py --read_freq_seconds 3 --dont_daemonize --csv_report /home/pi/BatHome/co2/co2_history.csv /dev/hidraw0
+WorkingDirectory=/home/pi/BatHome/co2
 StandardOutput=inherit
 StandardError=inherit
 Restart=always

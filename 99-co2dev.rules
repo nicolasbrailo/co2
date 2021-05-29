@@ -8,7 +8,6 @@ ACTION!="add", GOTO="co2dev_end"
     MODE="0664", \
     SYMLINK+="co2_sensor", \
     TAG+="systemd", \
-    RUN+="/bin/bash /home/pi/co2/99-co2dev.sh", \
     GOTO="co2dev_end"
 
 LABEL="co2dev_end"
