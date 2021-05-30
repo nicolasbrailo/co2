@@ -40,11 +40,13 @@ class CO2DevReader(object):
     def _dev_read_next(fp):
         return list(ord(e) for e in fp.read(8))
 
-    def __init__(self, logger, device_path, key):
+    def __init__(self, logger, device_path, key, smooth_temperature=True):
         self._logger = logger
         self._device_path = device_path
         self._device_key = key
         self._fp = None
+        self._smooth_temperature = smooth_temperature
+        self._smooth_alpha = 0.8
         self.last_updated = time.time()
         self._reset()
 
@@ -95,7 +97,12 @@ class CO2DevReader(object):
             if op == 0x50:
                 self.co2 = val
             elif op == 0x42:
-                self.temperature = int(10*(val/16.0-273.15)) / 10.
+                t = val/16.0-273.15
+                if self._smooth_temperature and self.temperature is not None:
+                    self.temperature = (self._smooth_alpha * t) + ((1. - self._smooth_alpha) * self.temperature)
+                    self.temperature = round(self.temperature, 1)
+                else:
+                    self.temperature = t
             elif op == 0x44:
                 self.rel_humidity = val/100.0
             else:
