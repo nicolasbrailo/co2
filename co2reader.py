@@ -3,7 +3,7 @@
 # * https://hackaday.io/project/5301-reverse-engineering-a-low-cost-usb-co-monitor/log/17909-all-your-base-are-belong-to-us
 # * https://blog.wooga.com/woogas-office-weather-wow-67e24a5338
 
-import time, fcntl, threading, os, signal
+import time, fcntl, threading, os, signal, tempfile
 
 class CO2DevReader(object):
     class Disconnected(Exception):
@@ -95,7 +95,7 @@ class CO2DevReader(object):
             if op == 0x50:
                 self.co2 = val
             elif op == 0x42:
-                self.temperature = val/16.0-273.15
+                self.temperature = int(10*(val/16.0-273.15)) / 10.
             elif op == 0x44:
                 self.rel_humidity = val/100.0
             else:
@@ -222,9 +222,22 @@ class FileReporter(object):
 class MiniFileReporter(object):
     """ Keep a file with the latest status of sensor data, but smaller """
 
-    def __init__(self, logger, file_path):
+    def __init__(self, logger, file_path, log_max_entries, log_min_entries):
         self._logger = logger
         self._file_path = file_path
+        self._log_max_entries = log_max_entries
+        self._log_min_entries = log_min_entries
+        self._write_cnt = 0
+        try:
+            with open(self._file_path, 'r') as fp:
+                ln = fp.readline()
+                while ln:
+                    self._write_cnt += 1
+                    ln = fp.readline()
+            logger.info("Log has history cnt {} max is {} min is {}".format(self._write_cnt, log_max_entries, log_min_entries))
+        except:
+            pass
+
         self._logger.info("Will keep log in {}".format(self._file_path))
 
     def on_sensor_updated(self, sensor):
@@ -236,8 +249,23 @@ class MiniFileReporter(object):
         try:
             with open(self._file_path, 'a+') as fp:
                 fp.write(msg)
+                self._write_cnt += 1
         except Exception as ex:
             self._logger.error("Couldn't update report at {}: {}".format(self._file_path, ex))
+
+        if self._write_cnt >= self._log_max_entries:
+            f_new = tempfile.NamedTemporaryFile(delete=False, mode='w')
+            with open(self._file_path, 'r') as f_old:
+                for i in range(self._write_cnt - self._log_min_entries):
+                    f_old.readline()
+
+                ln = f_old.readline()
+                while ln:
+                    f_new.file.write(ln)
+                    ln = f_old.readline()
+                self._write_cnt = self._log_min_entries
+
+            os.rename(f_new.name, self._file_path)
 
     def on_shutdown(self):
         pass
@@ -358,7 +386,7 @@ def parse_argv(app_descr, device_reconnection_backoff_seconds, read_freq_seconds
     parser.add_argument('--json_report_decoded_sensor_status_path', default=None,
                            help='Path for a dev-like file which will contain the latest sensor status. JSON format.')
     parser.add_argument('--csv_log', default=None,
-                           help='Path for a csv log file. Size is not capped.')
+                           help='Path for a csv log file. Size is not capped by a hardcoded value (2 days?).')
     parser.add_argument('--plot_report_path', help='Create a graph report', default=None)
     parser.add_argument('device_path', help='Device path (eg: /dev/hidraw0)')
 
@@ -389,6 +417,8 @@ def mk_logger(log_name, verbose):
 
 
 READ_FREQ_SECONDS = 60 * 3
+LOG_MAX_TIME_SECONDS = 3 * 24 * 60 * 60 # Keep max 3 days
+LOG_MIN_TIME_SECONDS = 2 * 24 * 60 * 60 # When deleting old entries, keep last 2 days
 DEVICE_RECONNECTION_BACKOFF_SECONDS = 60
 APP_DESCR = """Periodically log CO2 and temperature readings from a sensor. For device details, see:
 
@@ -414,7 +444,10 @@ if __name__ == "__main__":
         on_sensor_update_cbs.append(FileReporter(logger, args.csv_report_decoded_sensor_status_path, 'csv', False))
 
     if args.csv_log is not None:
-        on_sensor_update_cbs.append(MiniFileReporter(logger, args.csv_log))
+        # When log reaches max_time, truncate it back to min_time
+        log_max_entries = LOG_MAX_TIME_SECONDS / args.read_freq_seconds
+        log_min_entries = LOG_MIN_TIME_SECONDS / args.read_freq_seconds
+        on_sensor_update_cbs.append(MiniFileReporter(logger, args.csv_log, log_max_entries, log_min_entries))
 
     if args.plot_report_path is not None:
         on_sensor_update_cbs.append(PlotReporter(logger, args.plot_report_path))
