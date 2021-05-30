@@ -191,7 +191,8 @@ class FileReporter(object):
         else:
             raise Exception("Invalid format {}".format(fmt))
 
-        self._logger.info("Will report {} status to {}".format(fmt, self._file_path))
+        action = "append" if append else "overwrite"
+        self._logger.info("Will {} {} status to {}".format(action, fmt, self._file_path))
 
     def on_sensor_updated(self, sensor):
         msg = self._msg_format.format(
