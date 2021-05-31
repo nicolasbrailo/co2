@@ -46,7 +46,7 @@ class CO2DevReader(object):
         self._device_key = key
         self._fp = None
         self._smooth_temperature = smooth_temperature
-        self._smooth_alpha = 0.8
+        self._smooth_alpha = 0.4
         self.last_updated = time.time()
         self._reset()
 
